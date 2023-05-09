@@ -43,43 +43,54 @@ func (p *VolumeSnapshotRestoreRestoreItemAction) Execute(input *velero.RestoreIt
 		return nil, err
 	}
 
-	// create VSR
-	vsr := datamoverv1alpha1.VolumeSnapshotRestore{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "vsr-",
-			Namespace:    vsb.Namespace,
-			Labels: map[string]string{
-				util.RestoreNameLabel:           input.Restore.Name,
-				util.PersistentVolumeClaimLabel: vsb.Annotations[util.VolumeSnapshotMoverSourcePVCName],
-			},
-		},
-		Spec: datamoverv1alpha1.VolumeSnapshotRestoreSpec{
-			ResticSecretRef: corev1.LocalObjectReference{
-				Name: vsb.Spec.ResticSecretRef.Name,
-			},
-			VolumeSnapshotMoverBackupref: datamoverv1alpha1.VSBRef{
-				BackedUpPVCData: datamoverv1alpha1.PVCData{
-					Name:             vsb.Annotations[util.VolumeSnapshotMoverSourcePVCName],
-					Size:             vsb.Annotations[util.VolumeSnapshotMoverSourcePVCSize],
-					StorageClassName: vsb.Annotations[util.VolumeSnapshotMoverSourcePVCStorageClass],
-				},
-				ResticRepository:        vsb.Annotations[util.VolumeSnapshotMoverResticRepository],
-				VolumeSnapshotClassName: vsb.Annotations[util.VolumeSnapshotMoverVolumeSnapshotClass],
-			},
-			ProtectedNamespace: vsb.Spec.ProtectedNamespace,
-		},
-	}
-
-	// if namespace mapping is specified
-	if val, ok := input.Restore.Spec.NamespaceMapping[vsr.GetNamespace()]; ok {
-		vsr.SetNamespace(val)
-	}
-
-	err = snapMoverClient.Create(context.Background(), &vsr)
+	// check if VolumeSnaphotRestore CR exists for VolumeSnaoshotBackup
+	VSRExists, err := util.VSRExistsForVSB(&vsb, p.Log)
 	if err != nil {
-		return nil, errors.Wrapf(err, "error creating volumesnapshotrestore CR")
+		return nil, err
 	}
-	p.Log.Infof("[vsb-restore] vsr created: %s", vsr.Name)
+
+	if !VSRExists {
+
+		// create VSR
+		vsr := datamoverv1alpha1.VolumeSnapshotRestore{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "vsr-",
+				Namespace:    vsb.Namespace,
+				Labels: map[string]string{
+					util.RestoreNameLabel:           input.Restore.Name,
+					util.PersistentVolumeClaimLabel: vsb.Annotations[util.VolumeSnapshotMoverSourcePVCName],
+					util.VolumeSnapshotBackupLabel:  vsb.Name,
+				},
+			},
+			Spec: datamoverv1alpha1.VolumeSnapshotRestoreSpec{
+				ResticSecretRef: corev1.LocalObjectReference{
+					Name: vsb.Spec.ResticSecretRef.Name,
+				},
+				VolumeSnapshotMoverBackupref: datamoverv1alpha1.VSBRef{
+					BackedUpPVCData: datamoverv1alpha1.PVCData{
+						Name:             vsb.Annotations[util.VolumeSnapshotMoverSourcePVCName],
+						Size:             vsb.Annotations[util.VolumeSnapshotMoverSourcePVCSize],
+						StorageClassName: vsb.Annotations[util.VolumeSnapshotMoverSourcePVCStorageClass],
+					},
+					ResticRepository:        vsb.Annotations[util.VolumeSnapshotMoverResticRepository],
+					VolumeSnapshotClassName: vsb.Annotations[util.VolumeSnapshotMoverVolumeSnapshotClass],
+				},
+				ProtectedNamespace: vsb.Spec.ProtectedNamespace,
+			},
+		}
+
+		// if namespace mapping is specified
+		if val, ok := input.Restore.Spec.NamespaceMapping[vsr.GetNamespace()]; ok {
+			vsr.SetNamespace(val)
+		}
+
+		err = snapMoverClient.Create(context.Background(), &vsr)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error creating volumesnapshotrestore CR")
+		}
+		p.Log.Infof("[vsb-restore] vsr created: %s", vsr.Name)
+
+	}
 
 	// don't restore VSB
 	return &velero.RestoreItemActionExecuteOutput{

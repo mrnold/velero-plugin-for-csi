@@ -96,34 +96,35 @@ func (p *VolumeSnapshotContentBackupItemAction) Execute(item runtime.Unstructure
 			return nil, nil, errors.WithStack(err)
 		}
 
-		// craft a VolumeBackupSnapshot object to be created
-		vsb := datamoverv1alpha1.VolumeSnapshotBackup{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "vsb-",
-				Namespace:    snapCont.Spec.VolumeSnapshotRef.Namespace,
-				Labels: map[string]string{
-					util.BackupNameLabel: backup.Name,
-				},
-			},
-			Spec: datamoverv1alpha1.VolumeSnapshotBackupSpec{
-				VolumeSnapshotContent: corev1api.ObjectReference{
-					Name: snapCont.Name,
-				},
-				ProtectedNamespace: backup.Namespace,
-				ResticSecretRef: corev1api.LocalObjectReference{
-					Name: resticSecretName,
-				},
-			},
-		}
-
-		// check if VolumeBackupSnapshot CR exists for VSC
-		VSBExists, err := util.DoesVolumeSnapshotBackupExistForVSC(&snapCont, p.Log)
+		// check if VolumeSnapshotBackup CR exists for VolumeSnapshotContent
+		VSBExists, err := util.VSBExistsForVSC(&snapCont, p.Log)
 		if err != nil {
 			return nil, nil, errors.WithStack(err)
 		}
 
 		// Create VSB only if does not exist for the VSC
 		if !VSBExists {
+			// craft a VolumeBackupSnapshot object to be created
+			vsb := datamoverv1alpha1.VolumeSnapshotBackup{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "vsb-",
+					Namespace:    snapCont.Spec.VolumeSnapshotRef.Namespace,
+					Labels: map[string]string{
+						util.BackupNameLabel:                           backup.Name,
+						util.VolumeSnapshotBackupVolumeSnapshotContent: snapCont.Name,
+					},
+				},
+				Spec: datamoverv1alpha1.VolumeSnapshotBackupSpec{
+					VolumeSnapshotContent: corev1api.ObjectReference{
+						Name: snapCont.Name,
+					},
+					ProtectedNamespace: backup.Namespace,
+					ResticSecretRef: corev1api.LocalObjectReference{
+						Name: resticSecretName,
+					},
+				},
+			}
+
 			vsbClient, err := util.GetVolumeSnapshotMoverClient()
 
 			err = vsbClient.Create(context.Background(), &vsb)
@@ -133,24 +134,24 @@ func (p *VolumeSnapshotContentBackupItemAction) Execute(item runtime.Unstructure
 			}
 
 			p.Log.Infof("Created volumesnapshotbackup %s", fmt.Sprintf("%s/%s", vsb.Namespace, vsb.Name))
+
+			// adding volumesnapshotbackup instance as an additional item, need to block the plugin execution till VSB CR is recon complete
+			additionalItems = append(additionalItems, velero.ResourceIdentifier{
+				GroupResource: schema.GroupResource{Group: "datamover.oadp.openshift.io", Resource: "volumesnapshotbackup"},
+				Name:          vsb.Name,
+				Namespace:     vsb.Namespace,
+			})
 		}
 
-		// adding volumesnapshotbackup instance as an additional item, need to block the plugin execution till VSB CR is recon complete
-		additionalItems = append(additionalItems, velero.ResourceIdentifier{
-			GroupResource: schema.GroupResource{Group: "datamover.oadp.openshift.io", Resource: "volumesnapshotbackup"},
-			Name:          vsb.Name,
-			Namespace:     vsb.Namespace,
-		})
-	}
-
-	// we should backup the snapshot deletion secrets that may be referenced in the volumesnapshotcontent's annotation
-	if util.IsVolumeSnapshotContentHasDeleteSecret(&snapCont) {
-		// TODO: add GroupResource for secret into kuberesource
-		additionalItems = append(additionalItems, velero.ResourceIdentifier{
-			GroupResource: schema.GroupResource{Group: "", Resource: "secrets"},
-			Name:          snapCont.Annotations[util.PrefixedSnapshotterSecretNameKey],
-			Namespace:     snapCont.Annotations[util.PrefixedSnapshotterSecretNamespaceKey],
-		})
+		// we should backup the snapshot deletion secrets that may be referenced in the volumesnapshotcontent's annotation
+		if util.IsVolumeSnapshotContentHasDeleteSecret(&snapCont) {
+			// TODO: add GroupResource for secret into kuberesource
+			additionalItems = append(additionalItems, velero.ResourceIdentifier{
+				GroupResource: schema.GroupResource{Group: "", Resource: "secrets"},
+				Name:          snapCont.Annotations[util.PrefixedSnapshotterSecretNameKey],
+				Namespace:     snapCont.Annotations[util.PrefixedSnapshotterSecretNamespaceKey],
+			})
+		}
 	}
 
 	p.Log.Infof("Returning from VolumeSnapshotContentBackupItemAction with %d additionalItems to backup", len(additionalItems))
